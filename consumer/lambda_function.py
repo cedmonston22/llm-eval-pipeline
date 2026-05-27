@@ -22,9 +22,13 @@ RECORD_FIELDS = (
     "prompt",
     "model",
     "response",
-    "token_count",
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
     "latency_ms",
     "timestamp",
+    "error",
+    "annotated",
 )
 
 
