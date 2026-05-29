@@ -7,7 +7,8 @@ payload uses the ``rmqMessagesByQueue`` shape: a dict keyed by
 message objects. Each message's ``data`` field is a base64-encoded JSON body.
 
 For each message we decode the body, parse the JSON, extract the eval fields,
-and print the structured record as formatted JSON so it lands in CloudWatch.
+print the structured record as formatted JSON so it lands in CloudWatch, and
+index it into the ``eval-jobs`` Elasticsearch index for later search/annotation.
 """
 
 from __future__ import annotations
@@ -15,7 +16,10 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import os
 import sys
+
+from elasticsearch import ApiError, BadRequestError, Elasticsearch, TransportError
 
 # The eval fields we surface from each message body. Missing keys become None.
 RECORD_FIELDS = (
@@ -30,6 +34,53 @@ RECORD_FIELDS = (
     "error",
     "annotated",
 )
+
+# Elasticsearch index that receives every parsed eval record.
+INDEX_NAME = "eval-jobs"
+
+# Explicit mapping so field types are stable regardless of first-seen values.
+INDEX_MAPPINGS = {
+    "properties": {
+        "prompt": {"type": "keyword"},
+        "model": {"type": "keyword"},
+        "error": {"type": "keyword"},
+        "response": {"type": "text"},
+        "input_tokens": {"type": "float"},
+        "output_tokens": {"type": "float"},
+        "total_tokens": {"type": "float"},
+        "latency_ms": {"type": "float"},
+        "timestamp": {"type": "date"},
+        "annotated": {"type": "boolean"},
+    }
+}
+
+# Built once per (warm) Lambda container and reused across invocations. Using
+# os.environ[...] (not .get) makes a missing credential fail fast at cold start.
+_es_client = Elasticsearch(
+    cloud_id=os.environ["ELASTIC_CLOUD_ID"],
+    api_key=os.environ["ELASTIC_API_KEY"],
+)
+
+# Whether we have already ensured the index exists in this container.
+_index_ready = False
+
+
+def _ensure_index() -> None:
+    """Create the eval-jobs index with an explicit mapping if it is missing.
+
+    Runs at most once per warm container and is safe against the create/create
+    race between concurrent Lambdas (already-exists is treated as success).
+    """
+    global _index_ready
+    if _index_ready:
+        return
+    if not _es_client.indices.exists(index=INDEX_NAME):
+        try:
+            _es_client.indices.create(index=INDEX_NAME, mappings=INDEX_MAPPINGS)
+        except BadRequestError as exc:
+            if getattr(exc, "error", "") != "resource_already_exists_exception":
+                raise
+    _index_ready = True
 
 
 def parse_record(raw: dict[str, object]) -> dict[str, object]:
@@ -67,9 +118,11 @@ def lambda_handler(event: dict[str, object], context: object) -> dict[str, int]:
     """Entry point for the Amazon MQ (RabbitMQ) trigger.
 
     Processes every message in the batch, printing each parsed record as
-    formatted JSON. A malformed message is logged to stderr and skipped so it
-    does not fail the rest of the batch. Returns a summary of how many messages
-    were processed versus failed.
+    formatted JSON and indexing it into Elasticsearch. A malformed message is
+    logged to stderr and skipped so it does not fail the rest of the batch; an
+    indexing failure is likewise logged and skipped (the message is still
+    counted as processed since it was decoded and logged). Returns a summary of
+    how many messages were processed versus failed.
     """
     messages_by_queue = event.get("rmqMessagesByQueue", {})
     if not isinstance(messages_by_queue, dict):
@@ -94,5 +147,14 @@ def lambda_handler(event: dict[str, object], context: object) -> dict[str, int]:
 
             processed += 1
             print(json.dumps(record, indent=2))
+
+            try:
+                _ensure_index()
+                _es_client.index(index=INDEX_NAME, document=record)
+            except (ApiError, TransportError) as exc:
+                print(
+                    f"Failed to index record into '{INDEX_NAME}': {exc}",
+                    file=sys.stderr,
+                )
 
     return {"processed": processed, "failed": failed}

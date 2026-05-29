@@ -1,3 +1,6 @@
-# No third-party runtime dependencies.
-# The handler uses only the Python standard library (base64, binascii, json,
-# sys), all of which are provided by the AWS Lambda Python runtime.
+# Bundled into the Lambda deployment package by deploy-consumer.ps1.
+# Pin the client major version to the Elastic cluster major version (9.x).
+# The full tree (elasticsearch, elastic-transport, urllib3, certifi,
+# python-dateutil/six) is pure Python, so a plain Windows pip install produces a
+# Lambda (Amazon Linux) compatible package.
+elasticsearch==9.4.2
