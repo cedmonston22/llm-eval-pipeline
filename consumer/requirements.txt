@@ -3,4 +3,4 @@
 # The full tree (elasticsearch, elastic-transport, urllib3, certifi,
 # python-dateutil/six) is pure Python, so a plain Windows pip install produces a
 # Lambda (Amazon Linux) compatible package.
-elasticsearch==9.4.2
+elasticsearch==9.4.1

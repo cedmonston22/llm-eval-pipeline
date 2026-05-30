@@ -40,7 +40,11 @@ if (Test-Path $build) { Remove-Item $build -Recurse -Force }
 New-Item -ItemType Directory -Path $build | Out-Null
 
 Write-Host "Installing dependencies into $build ..."
-pip install -r $requirements --target $build
+# Invoke pip via the venv's python.exe (-m pip) rather than running pip.exe
+# directly: the Application Control policy on this machine blocks the unsigned
+# pip.exe shim in the user-writable .venv, but allows python.exe.
+$venvPython = Join-Path (Join-Path (Join-Path (Join-Path $PSScriptRoot '..') '.venv') 'Scripts') 'python.exe'
+& $venvPython -m pip install -r $requirements --target $build
 if ($LASTEXITCODE -ne 0) { throw "pip install failed (exit $LASTEXITCODE)" }
 
 Write-Host "Adding handler ..."
